@@ -1,0 +1,2 @@
+[console_scripts]
+proxmox-tool = proxmox_tools.cli:main

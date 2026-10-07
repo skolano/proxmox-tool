@@ -1,0 +1,58 @@
+Metadata-Version: 2.4
+Name: proxmox-tools
+Version: 0.2.0
+Summary: CLI for querying Proxmox VE clusters through the REST API
+License-Expression: MIT
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: typer==0.27.2
+Requires-Dist: requests==2.34.2
+Requires-Dist: rich==15.0.0
+Requires-Dist: questionary==2.1.1
+Requires-Dist: PyYAML==6.0.3
+Dynamic: license-file
+
+# proxmox-tools
+
+`proxmox-tool` is a command-line tool for querying Proxmox VE clusters through the REST API, without the web UI.
+
+Full usage, columns and limitations: [user-guide.md](user-guide.md).
+
+## Commands
+
+| Command | Description |
+|---|---|
+| `context add/list/use/current` | Manage configured clusters and the active context |
+| `get nodes` | Nodes with live CPU/RAM usage, uptime and running VM count |
+| `get vms` | VM table with filters (`--pool`, `--without-pool`, `--node`, `--status`, `--tag`), optional `--serial` column and summary |
+| `get vm --ip/--serial/--name` | Find VMs by IP (Guest Agent), SMBIOS serial or name |
+| `get firewall` | VM-level and per-interface firewall switches |
+| `describe vm <vmid>` | General, resources, network, disks, snapshots, last backup, guest OS |
+
+## Architecture
+
+- Proxmox VE REST API (`https://<host>:8006/api2/json`), API token authentication.
+- Multiple clusters with one active context, similar to `kubectl config use-context`.
+- Live data only, no cache. Per-VM requests run in parallel (up to 20).
+- Configuration and secrets in `~/.config/proxmox-tools/config.yaml` (mode `600`).
+- Python, Typer, requests, rich, questionary, PyYAML.
+
+## Requirements
+
+- Python 3.10+ and `pipx` on the workstation.
+- HTTPS access to the cluster API (port 8006).
+- API token with the `PVEAuditor` role and its own ACL entry (see [user-guide.md](user-guide.md#requirements)).
+- `qemu-guest-agent` in VMs for IP lookup and live data in `describe vm`.
+
+## Installation
+
+```bash
+pipx install .
+```
+
+Upgrade: `pipx install --force .`
+
+## License
+
+MIT, see [LICENSE](LICENSE).
