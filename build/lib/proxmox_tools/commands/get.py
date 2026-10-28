@@ -2,7 +2,7 @@ import typer
 from rich.table import Table
 
 from proxmox_tools.api import ProxmoxAPI, ProxmoxAPIError
-from proxmox_tools.commands.common import console, fail, fetch_vms, get_api, run_parallel
+from proxmox_tools.commands.common import console, fail, fetch_guests, get_api, run_parallel
 from proxmox_tools.utils import (
     extract_bridges,
     format_bytes_as_mb,
@@ -10,13 +10,19 @@ from proxmox_tools.utils import (
     format_firewall_status,
     format_ram_usage,
     format_uptime,
+    guest_type_label,
+    interface_ips,
+    is_lxc,
     parse_net_interfaces,
+    plural,
     parse_smbios,
+    static_ip,
 )
 
 app = typer.Typer(help="Read the state of the active Proxmox VE cluster.")
 
 FETCH_ERROR = "[yellow]error[/yellow]"
+TYPE_FILTERS = {"vm": "qemu", "lxc": "lxc"}
 
 
 def _print_failed(label: str, vmids) -> None:
@@ -27,19 +33,20 @@ def _print_failed(label: str, vmids) -> None:
 
 @app.command("nodes")
 def get_nodes():
-    """List cluster nodes with live CPU/RAM usage."""
+    """List cluster nodes with live CPU/RAM usage and running guests."""
     api = get_api()
 
     try:
         nodes = api.get_nodes()
-        vms = api.get_vms()
+        guests = api.get_guests()
     except ProxmoxAPIError as exc:
         fail(str(exc))
 
-    running_per_node: dict[str, int] = {}
-    for vm in vms:
-        if vm.get("status") == "running":
-            running_per_node[vm["node"]] = running_per_node.get(vm["node"], 0) + 1
+    running: dict[tuple[str, str], int] = {}
+    for guest in guests:
+        if guest.get("status") == "running":
+            key = (guest["node"], guest["type"])
+            running[key] = running.get(key, 0) + 1
 
     table = Table()
     table.add_column("Node")
@@ -48,68 +55,75 @@ def get_nodes():
     table.add_column("RAM")
     table.add_column("Uptime")
     table.add_column("Running VMs")
+    table.add_column("Running LXC")
 
     for node in sorted(nodes, key=lambda n: n["node"]):
+        name = node["node"]
         table.add_row(
-            node["node"],
+            name,
             node.get("status", "-"),
             format_cpu_usage(node.get("cpu"), node.get("maxcpu")),
             format_ram_usage(node.get("mem"), node.get("maxmem")),
             format_uptime(node.get("uptime")),
-            str(running_per_node.get(node["node"], 0)),
+            str(running.get((name, "qemu"), 0)),
+            str(running.get((name, "lxc"), 0)),
         )
 
     console.print(table)
 
 
-def _fetch_vm_configs(api: ProxmoxAPI, vms: list[dict]) -> tuple[dict[int, dict], set[int]]:
+def _fetch_configs(api: ProxmoxAPI, guests: list[dict]) -> tuple[dict[int, dict], set[int]]:
     configs: dict[int, dict] = {}
     failed: set[int] = set()
-    for vm, vm_config, error in run_parallel(lambda v: api.get_vm_config(v["node"], v["vmid"]), vms):
+    for guest, guest_config, error in run_parallel(
+        lambda g: api.get_guest_config(g["type"], g["node"], g["vmid"]), guests
+    ):
         if error:
-            failed.add(vm["vmid"])
+            failed.add(guest["vmid"])
         else:
-            configs[vm["vmid"]] = vm_config
+            configs[guest["vmid"]] = guest_config
     return configs, failed
 
 
 @app.command("vms")
 def get_vms(
+    type_filter: str = typer.Option(None, "--type", help="Only guests of the given type: vm or lxc."),
     without_pool: bool = typer.Option(
-        False, "--without-pool", help="Only VMs not assigned to any pool."
+        False, "--without-pool", help="Only guests not assigned to any pool."
     ),
-    pool: str = typer.Option(None, "--pool", help="Only VMs in the given pool."),
-    node_filter: str = typer.Option(None, "--node", help="Only VMs on the given node."),
-    status: str = typer.Option(None, "--status", help="Only VMs in the given state (e.g. running, stopped)."),
-    tag: str = typer.Option(None, "--tag", help="Only VMs with the given tag."),
-    serial: bool = typer.Option(
-        False,
-        "--serial",
-        help="Add the SMBIOS serial column.",
-    ),
+    pool: str = typer.Option(None, "--pool", help="Only guests in the given pool."),
+    node_filter: str = typer.Option(None, "--node", help="Only guests on the given node."),
+    status: str = typer.Option(None, "--status", help="Only guests in the given state (e.g. running, stopped)."),
+    tag: str = typer.Option(None, "--tag", help="Only guests with the given tag."),
+    serial: bool = typer.Option(False, "--serial", help="Add the SMBIOS serial column (VMs only)."),
 ):
-    """List all VMs in the active cluster."""
+    """List all VMs and LXC containers in the active cluster."""
     if without_pool and pool:
         fail("--without-pool cannot be combined with --pool.")
+    if type_filter and type_filter not in TYPE_FILTERS:
+        fail("--type must be 'vm' or 'lxc'.")
 
     api = get_api()
-    vms = fetch_vms(api)
+    guests = fetch_guests(api)
 
+    if type_filter:
+        guests = [g for g in guests if g["type"] == TYPE_FILTERS[type_filter]]
     if without_pool:
-        vms = [vm for vm in vms if not vm.get("pool")]
+        guests = [g for g in guests if not g.get("pool")]
     if pool:
-        vms = [vm for vm in vms if vm.get("pool") == pool]
+        guests = [g for g in guests if g.get("pool") == pool]
     if node_filter:
-        vms = [vm for vm in vms if vm.get("node") == node_filter]
+        guests = [g for g in guests if g.get("node") == node_filter]
     if status:
-        vms = [vm for vm in vms if vm.get("status") == status]
+        guests = [g for g in guests if g.get("status") == status]
     if tag:
-        vms = [vm for vm in vms if tag in (vm.get("tags") or "").split(";")]
+        guests = [g for g in guests if tag in (g.get("tags") or "").split(";")]
 
-    configs, failed = _fetch_vm_configs(api, vms)
+    configs, failed = _fetch_configs(api, guests)
 
     table = Table()
     table.add_column("VMID")
+    table.add_column("Type")
     table.add_column("Name")
     table.add_column("Node")
     table.add_column("Status")
@@ -120,79 +134,102 @@ def get_vms(
     if serial:
         table.add_column("Serial")
 
-    for vm in sorted(vms, key=lambda v: v["vmid"]):
-        vmid = vm["vmid"]
-        vm_config = configs.get(vmid, {})
+    for guest in sorted(guests, key=lambda g: g["vmid"]):
+        vmid = guest["vmid"]
+        guest_config = configs.get(vmid, {})
         row = [
             str(vmid),
-            vm.get("name", "-"),
-            vm["node"],
-            vm.get("status", "-"),
-            format_bytes_as_mb(vm.get("maxmem", 0)),
-            str(vm.get("maxcpu", "-")),
-            FETCH_ERROR if vmid in failed else extract_bridges(vm_config),
-            vm.get("pool") or "-",
+            guest_type_label(guest),
+            guest.get("name", "-"),
+            guest["node"],
+            guest.get("status", "-"),
+            format_bytes_as_mb(guest.get("maxmem", 0)),
+            str(guest.get("maxcpu", "-")),
+            FETCH_ERROR if vmid in failed else extract_bridges(guest_config),
+            guest.get("pool") or "-",
         ]
         if serial:
-            row.append(FETCH_ERROR if vmid in failed else parse_smbios(vm_config).get("serial") or "-")
+            if is_lxc(guest):
+                row.append("-")
+            elif vmid in failed:
+                row.append(FETCH_ERROR)
+            else:
+                row.append(parse_smbios(guest_config).get("serial") or "-")
         table.add_row(*row)
 
     console.print(table)
 
-    non_template_vms = [vm for vm in vms if not vm.get("template")]
-    template_count = len(vms) - len(non_template_vms)
-    running_count = sum(1 for vm in non_template_vms if vm.get("status") == "running")
-    stopped_count = sum(1 for vm in non_template_vms if vm.get("status") == "stopped")
+    active = [g for g in guests if not g.get("template")]
+    template_count = len(guests) - len(active)
+    vms = [g for g in active if not is_lxc(g)]
+    running_count = sum(1 for g in active if g.get("status") == "running")
+    stopped_count = sum(1 for g in active if g.get("status") == "stopped")
 
-    summary = f"Total: {len(non_template_vms)} VMs ({running_count} running, {stopped_count} stopped)"
+    counts = []
+    if type_filter != "lxc":
+        counts.append(plural(len(vms), "VM"))
+    if type_filter != "vm":
+        counts.append(f"{len(active) - len(vms)} LXC")
+    summary = f"Total: {', '.join(counts)} ({running_count} running, {stopped_count} stopped)"
     if template_count:
-        summary += f", excluding {template_count} templates"
-    if serial:
+        summary += f", excluding {plural(template_count, 'template')}"
+    if serial and type_filter != "lxc":
         missing_serial = sum(
             1
-            for vm in non_template_vms
+            for vm in vms
             if vm["vmid"] not in failed and not parse_smbios(configs.get(vm["vmid"], {})).get("serial")
         )
-        summary += f" | Without serial: {missing_serial}"
+        summary += f" | VMs without serial: {missing_serial}"
     console.print(summary)
     _print_failed("config", failed)
 
 
-def _fetch_firewall(api: ProxmoxAPI, vm: dict) -> tuple[str, str]:
-    node, vmid = vm["node"], vm["vmid"]
+def _fetch_firewall(api: ProxmoxAPI, guest: dict) -> tuple[str, str]:
+    guest_type, node, vmid = guest["type"], guest["node"], guest["vmid"]
     try:
-        vm_firewall = format_firewall_status(api.get_vm_firewall_options(node, vmid).get("enable"))
+        options = api.get_guest_firewall_options(guest_type, node, vmid)
+        guest_firewall = format_firewall_status(options.get("enable"))
     except ProxmoxAPIError:
-        vm_firewall = FETCH_ERROR
+        guest_firewall = FETCH_ERROR
 
     try:
-        interfaces = parse_net_interfaces(api.get_vm_config(node, vmid))
+        interfaces = parse_net_interfaces(api.get_guest_config(guest_type, node, vmid))
         fw_interfaces = [iface["key"] for iface in interfaces if iface.get("firewall") == "1"]
         fw_interfaces_display = ", ".join(fw_interfaces) if fw_interfaces else "-"
     except ProxmoxAPIError:
         fw_interfaces_display = FETCH_ERROR
 
-    return vm_firewall, fw_interfaces_display
+    return guest_firewall, fw_interfaces_display
 
 
 @app.command("firewall")
 def get_firewall():
-    """Show the VM-level and per-interface firewall switches for all VMs."""
+    """Show the guest-level and per-interface firewall switches for all VMs and LXC containers."""
     api = get_api()
-    vms = fetch_vms(api)
+    guests = fetch_guests(api)
 
-    results = {vm["vmid"]: result for vm, result, _ in run_parallel(lambda v: _fetch_firewall(api, v), vms)}
+    results = {
+        guest["vmid"]: result for guest, result, _ in run_parallel(lambda g: _fetch_firewall(api, g), guests)
+    }
 
     table = Table()
     table.add_column("VMID")
+    table.add_column("Type")
     table.add_column("Name")
     table.add_column("Node")
     table.add_column("Firewall (VM)")
     table.add_column("Firewalled interfaces")
 
-    for vm in sorted(vms, key=lambda v: v["vmid"]):
-        vm_firewall, fw_interfaces_display = results[vm["vmid"]]
-        table.add_row(str(vm["vmid"]), vm.get("name", "-"), vm["node"], vm_firewall, fw_interfaces_display)
+    for guest in sorted(guests, key=lambda g: g["vmid"]):
+        guest_firewall, fw_interfaces_display = results[guest["vmid"]]
+        table.add_row(
+            str(guest["vmid"]),
+            guest_type_label(guest),
+            guest.get("name", "-"),
+            guest["node"],
+            guest_firewall,
+            fw_interfaces_display,
+        )
 
     console.print(table)
 
@@ -201,57 +238,70 @@ def _print_matches(matches: list[dict], not_found: str) -> None:
     if not matches:
         console.print(not_found)
         raise typer.Exit(1)
-    for vm in sorted(matches, key=lambda v: v["vmid"]):
-        console.print(f"VMID: {vm['vmid']}  Name: {vm.get('name', '-')}")
+    for guest in sorted(matches, key=lambda g: g["vmid"]):
+        console.print(f"VMID: {guest['vmid']}  Name: {guest.get('name', '-')}  Type: {guest_type_label(guest)}")
 
 
-def _search_by_ip(api: ProxmoxAPI, vms: list[dict], ip: str) -> None:
-    running_vms = [vm for vm in vms if vm.get("status") == "running"]
-    results = run_parallel(lambda v: api.get_vm_agent_network_interfaces(v["node"], v["vmid"]), running_vms)
+def _guest_ips(api: ProxmoxAPI, guest: dict) -> list[str]:
+    node, vmid = guest["node"], guest["vmid"]
+    running = guest.get("status") == "running"
 
-    matches = [
-        vm
-        for vm, interfaces, error in results
-        if not error
-        and any(
-            addr.get("ip-address") == ip
-            for interface in interfaces
-            for addr in interface.get("ip-addresses", [])
-        )
-    ]
-    _print_matches(matches, f"No running VM found with IP address {ip}.")
+    if not is_lxc(guest):
+        interfaces = api.get_vm_agent_network_interfaces(node, vmid)
+        return [ip for iface in interfaces for ip in interface_ips(iface)]
+
+    ips = []
+    if running:
+        try:
+            ips = [ip for iface in api.get_lxc_interfaces(node, vmid) for ip in interface_ips(iface)]
+        except ProxmoxAPIError:
+            pass
+    if not ips:
+        config = api.get_guest_config("lxc", node, vmid)
+        ips = [ip for ip in map(static_ip, parse_net_interfaces(config)) if ip]
+    return ips
 
 
-def _search_by_serial(api: ProxmoxAPI, vms: list[dict], serial: str) -> None:
-    configs, failed = _fetch_vm_configs(api, vms)
+def _search_by_ip(api: ProxmoxAPI, guests: list[dict], ip: str) -> None:
+    candidates = [g for g in guests if is_lxc(g) or g.get("status") == "running"]
+    results = run_parallel(lambda g: _guest_ips(api, g), candidates)
+    matches = [guest for guest, ips, error in results if not error and ip in ips]
+    _print_matches(matches, f"No VM or LXC container found with IP address {ip}.")
+
+
+def _search_by_serial(api: ProxmoxAPI, guests: list[dict], serial: str) -> None:
+    vms = [g for g in guests if not is_lxc(g)]
+    configs, failed = _fetch_configs(api, vms)
     matches = [vm for vm in vms if parse_smbios(configs.get(vm["vmid"], {})).get("serial") == serial]
     if not matches:
         _print_failed("config", failed)
     _print_matches(matches, f"No VM found with serial {serial}.")
 
 
-def _search_by_name(vms: list[dict], name: str) -> None:
-    matches = [vm for vm in vms if vm.get("name") == name]
-    _print_matches(matches, f"No VM found with name {name}.")
+def _search_by_name(guests: list[dict], name: str) -> None:
+    matches = [g for g in guests if g.get("name") == name]
+    _print_matches(matches, f"No VM or LXC container found with name {name}.")
 
 
 @app.command("vm")
 def get_vm(
-    ip: str = typer.Option(None, "--ip", help="Find by IP address (Guest Agent, running VMs only)."),
-    serial: str = typer.Option(None, "--serial", help="Find by SMBIOS serial (includes stopped VMs)."),
-    name: str = typer.Option(None, "--name", help="Find by exact VM name."),
+    ip: str = typer.Option(
+        None, "--ip", help="Find by IP address (VM: Guest Agent, running only; LXC: live or static config)."
+    ),
+    serial: str = typer.Option(None, "--serial", help="Find by SMBIOS serial (VMs only, includes stopped)."),
+    name: str = typer.Option(None, "--name", help="Find by exact name."),
 ):
-    """Find VMs by IP address, serial or name; prints every match."""
+    """Find VMs and LXC containers by IP address, serial or name; prints every match."""
     provided = [value for value in (ip, serial, name) if value]
     if len(provided) != 1:
         fail("Provide exactly one of --ip, --serial or --name.")
 
     api = get_api()
-    vms = fetch_vms(api)
+    guests = fetch_guests(api)
 
     if ip:
-        _search_by_ip(api, vms, ip)
+        _search_by_ip(api, guests, ip)
     elif serial:
-        _search_by_serial(api, vms, serial)
+        _search_by_serial(api, guests, serial)
     else:
-        _search_by_name(vms, name)
+        _search_by_name(guests, name)

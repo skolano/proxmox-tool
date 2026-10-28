@@ -2,37 +2,40 @@ import typer
 from rich.table import Table
 
 from proxmox_tools.api import ProxmoxAPI, ProxmoxAPIError
-from proxmox_tools.commands.common import console, fail, fetch_vms, get_api, run_parallel
+from proxmox_tools.commands import cluster, node
+from proxmox_tools.commands.common import console, fail, fetch_guests, get_api, print_kv, run_parallel
 from proxmox_tools.utils import (
     format_bytes_as_mb,
     format_size_auto,
     format_timestamp,
     format_uptime,
+    ipv4_by_mac,
+    is_lxc,
     parse_disks,
     parse_net_interfaces,
     parse_smbios,
+    plural,
+    static_ip,
 )
 
-app = typer.Typer(help="Show detailed information about a single resource.")
-STOPPED_NOTICE = "VM stopped, no live data"
+app = typer.Typer(help="Show detailed information about a guest, node or the cluster.")
+STOPPED_NOTICE = "Stopped, no live data"
 AGENT_UNAVAILABLE_NOTICE = "Guest Agent unavailable"
 SHARED_STORAGE_TYPES = {"pbs", "nfs", "cifs", "cephfs", "glusterfs"}
 
 
-def _find_vm(api: ProxmoxAPI, vmid: int) -> dict:
-    for vm in fetch_vms(api):
-        if vm["vmid"] == vmid:
-            return vm
-    fail(f"VM {vmid} does not exist in the active cluster.")
+def _find_guest(api: ProxmoxAPI, vmid: int) -> dict:
+    for guest in fetch_guests(api):
+        if guest["vmid"] == vmid:
+            return guest
+    fail(f"VM or LXC container {vmid} does not exist in the active cluster.")
 
 
-def _print_kv(rows: list[tuple[str, str]]) -> None:
-    table = Table(show_header=False, box=None, pad_edge=False)
-    table.add_column(style="bold")
-    table.add_column()
-    for key, value in rows:
-        table.add_row(key, value)
-    console.print(table)
+def _type_display(guest: dict, guest_config: dict) -> str:
+    if not is_lxc(guest):
+        return "VM"
+    privilege = "unprivileged" if str(guest_config.get("unprivileged", "0")) == "1" else "privileged"
+    return f"LXC ({privilege})"
 
 
 def _print_general(vm: dict, vm_config: dict, vm_status: dict) -> None:
@@ -42,6 +45,7 @@ def _print_general(vm: dict, vm_config: dict, vm_status: dict) -> None:
 
     rows = [
         ("VMID", str(vm["vmid"])),
+        ("Type", _type_display(vm, vm_config)),
         ("Name", vm.get("name", "-")),
         ("Node", vm["node"]),
         ("Status", vm_status.get("status", "-")),
@@ -50,6 +54,9 @@ def _print_general(vm: dict, vm_config: dict, vm_status: dict) -> None:
         ("Pool", vm.get("pool") or "-"),
         ("Notes", vm_config.get("description") or "-"),
     ]
+    if is_lxc(vm):
+        rows.append(("Hostname", vm_config.get("hostname") or "-"))
+        rows.append(("OS", vm_config.get("ostype") or "-"))
 
     field_labels = (
         ("uuid", "UUID"),
@@ -64,11 +71,12 @@ def _print_general(vm: dict, vm_config: dict, vm_status: dict) -> None:
         if smbios.get(field):
             rows.append((label, smbios[field]))
 
-    _print_kv(rows)
+    print_kv(rows)
     console.print()
 
 
 def _print_resources(vm: dict, vm_status: dict, running: bool) -> None:
+    lxc = is_lxc(vm)
     console.print("[bold]Resources[/bold]")
     rows = [("RAM allocated", format_bytes_as_mb(vm.get("maxmem", 0)))]
     if running:
@@ -76,7 +84,12 @@ def _print_resources(vm: dict, vm_status: dict, running: bool) -> None:
     else:
         rows.append(("RAM usage", STOPPED_NOTICE))
 
-    rows.append(("CPU allocated", f"{vm.get('maxcpu', '-')} vCPU"))
+    if lxc:
+        rows.append(("Swap allocated", format_bytes_as_mb(vm_status.get("maxswap", 0))))
+        rows.append(("Swap usage", format_bytes_as_mb(vm_status.get("swap", 0)) if running else STOPPED_NOTICE))
+
+    maxcpu = vm.get("maxcpu")
+    rows.append(("CPU allocated", plural(maxcpu, "core") if lxc and maxcpu else f"{maxcpu or '-'} vCPU"))
     if running:
         cpu_fraction = vm_status.get("cpu")
         cpu_pct = f"{round(cpu_fraction * 100)}%" if cpu_fraction is not None else "-"
@@ -84,33 +97,32 @@ def _print_resources(vm: dict, vm_status: dict, running: bool) -> None:
     else:
         rows.append(("CPU usage", STOPPED_NOTICE))
 
-    _print_kv(rows)
+    print_kv(rows)
     console.print()
 
 
-def _print_network(api: ProxmoxAPI, node: str, vmid: int, vm_config: dict, running: bool) -> None:
+def _live_ips(api: ProxmoxAPI, guest: dict) -> dict[str, str]:
+    if is_lxc(guest):
+        return ipv4_by_mac(api.get_lxc_interfaces(guest["node"], guest["vmid"]))
+    return ipv4_by_mac(api.get_vm_agent_network_interfaces(guest["node"], guest["vmid"]))
+
+
+def _print_network(api: ProxmoxAPI, guest: dict, guest_config: dict, running: bool) -> None:
     console.print("[bold]Network[/bold]")
-    interfaces = parse_net_interfaces(vm_config)
+    interfaces = parse_net_interfaces(guest_config)
     if not interfaces:
         console.print("No network interfaces configured.")
         console.print()
         return
 
+    lxc = is_lxc(guest)
     ip_by_mac: dict[str, str] = {}
-    agent_error = None
+    live_error = None
     if running:
         try:
-            for iface in api.get_vm_agent_network_interfaces(node, vmid):
-                mac = iface.get("hardware-address", "").lower()
-                ips = [
-                    addr.get("ip-address")
-                    for addr in iface.get("ip-addresses", [])
-                    if addr.get("ip-address-type") == "ipv4"
-                ]
-                if mac and ips:
-                    ip_by_mac[mac] = ", ".join(ips)
+            ip_by_mac = _live_ips(api, guest)
         except ProxmoxAPIError:
-            agent_error = AGENT_UNAVAILABLE_NOTICE
+            live_error = "Live data unavailable" if lxc else AGENT_UNAVAILABLE_NOTICE
 
     table = Table()
     table.add_column("Interface")
@@ -118,17 +130,22 @@ def _print_network(api: ProxmoxAPI, node: str, vmid: int, vm_config: dict, runni
     table.add_column("MAC")
     table.add_column("Bridge")
     table.add_column("VLAN")
-    table.add_column("IP (live)")
+    table.add_column("IP")
 
     for iface in interfaces:
-        if not running:
+        live_ip = ip_by_mac.get(iface["mac"].lower()) if running and not live_error else None
+        config_ip = static_ip(iface) if lxc else None
+        if live_ip:
+            ip_display = live_ip
+        elif config_ip:
+            ip_display = f"{config_ip} (config)"
+        elif not running:
             ip_display = STOPPED_NOTICE
-        elif agent_error:
-            ip_display = agent_error
         else:
-            ip_display = ip_by_mac.get(iface["mac"].lower(), "-")
+            ip_display = live_error or "-"
+        label = f"{iface['key']} ({iface['name']})" if lxc and iface.get("name") else iface["key"]
         table.add_row(
-            iface["key"],
+            label,
             iface["model"],
             iface["mac"],
             iface.get("bridge", "-"),
@@ -139,7 +156,7 @@ def _print_network(api: ProxmoxAPI, node: str, vmid: int, vm_config: dict, runni
     console.print()
 
 
-def _print_disks(vm_config: dict) -> None:
+def _print_disks(guest: dict, vm_config: dict) -> None:
     console.print("[bold]Disks[/bold]")
     disks = parse_disks(vm_config)
     if not disks:
@@ -151,16 +168,25 @@ def _print_disks(vm_config: dict) -> None:
     table.add_column("Disk")
     table.add_column("Storage")
     table.add_column("Size")
+    if is_lxc(guest):
+        table.add_column("Mount point")
     for disk in disks:
-        table.add_row(disk["key"], disk["storage"], disk["size"])
+        row = [disk["key"], disk["storage"], disk["size"]]
+        if is_lxc(guest):
+            row.append(disk["mount"])
+        table.add_row(*row)
     console.print(table)
     console.print()
 
 
-def _print_snapshots(api: ProxmoxAPI, node: str, vmid: int) -> None:
+def _print_snapshots(api: ProxmoxAPI, guest: dict) -> None:
     console.print("[bold]Snapshots[/bold]")
     try:
-        snapshots = [s for s in api.get_vm_snapshots(node, vmid) if s.get("name") != "current"]
+        snapshots = [
+            s
+            for s in api.get_guest_snapshots(guest["type"], guest["node"], guest["vmid"])
+            if s.get("name") != "current"
+        ]
     except ProxmoxAPIError:
         console.print("Failed to fetch snapshots.")
         console.print()
@@ -233,7 +259,7 @@ def _print_backup(api: ProxmoxAPI, node: str, vmid: int) -> None:
                 latest = {**entry, "storage": label}
 
     if latest:
-        _print_kv(
+        print_kv(
             [
                 ("Last backup", format_timestamp(latest.get("ctime"))),
                 ("Storage", latest["storage"]),
@@ -241,7 +267,7 @@ def _print_backup(api: ProxmoxAPI, node: str, vmid: int) -> None:
             ]
         )
     else:
-        console.print("No backups found for this VM.")
+        console.print("No backups found.")
     if failed:
         console.print(f"[yellow]Failed to read storages: {', '.join(sorted(failed))}[/yellow]")
     console.print()
@@ -263,29 +289,34 @@ def _print_guest_os(api: ProxmoxAPI, node: str, vmid: int, running: bool) -> Non
         return
 
     os_name = osinfo.get("pretty-name") or osinfo.get("name", "-")
-    _print_kv([("Hostname", hostname), ("OS", os_name)])
+    print_kv([("Hostname", hostname), ("OS", os_name)])
     console.print()
 
 
 @app.command("vm")
-def describe_vm(vmid: int = typer.Argument(..., help="VM ID.")):
-    """Show VM details: general, resources, network, disks, snapshots, backup, guest OS."""
+def describe_vm(vmid: int = typer.Argument(..., help="VM or LXC container ID.")):
+    """Show VM or LXC details: general, resources, network, disks, snapshots, backup, guest OS (VM)."""
     api = get_api()
-    vm = _find_vm(api, vmid)
-    node = vm["node"]
+    guest = _find_guest(api, vmid)
+    guest_type, node = guest["type"], guest["node"]
 
     try:
-        vm_config = api.get_vm_config(node, vmid)
-        vm_status = api.get_vm_status(node, vmid)
+        guest_config = api.get_guest_config(guest_type, node, vmid)
+        guest_status = api.get_guest_status(guest_type, node, vmid)
     except ProxmoxAPIError as exc:
         fail(str(exc))
 
-    running = vm_status.get("status") == "running"
+    running = guest_status.get("status") == "running"
 
-    _print_general(vm, vm_config, vm_status)
-    _print_resources(vm, vm_status, running)
-    _print_network(api, node, vmid, vm_config, running)
-    _print_disks(vm_config)
-    _print_snapshots(api, node, vmid)
+    _print_general(guest, guest_config, guest_status)
+    _print_resources(guest, guest_status, running)
+    _print_network(api, guest, guest_config, running)
+    _print_disks(guest, guest_config)
+    _print_snapshots(api, guest)
     _print_backup(api, node, vmid)
-    _print_guest_os(api, node, vmid, running)
+    if not is_lxc(guest):
+        _print_guest_os(api, node, vmid, running)
+
+
+app.command("node")(node.describe_node)
+app.command("cluster")(cluster.describe_cluster)

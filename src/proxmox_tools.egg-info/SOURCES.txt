@@ -13,7 +13,9 @@ src/proxmox_tools.egg-info/entry_points.txt
 src/proxmox_tools.egg-info/requires.txt
 src/proxmox_tools.egg-info/top_level.txt
 src/proxmox_tools/commands/__init__.py
+src/proxmox_tools/commands/cluster.py
 src/proxmox_tools/commands/common.py
 src/proxmox_tools/commands/context.py
 src/proxmox_tools/commands/describe.py
 src/proxmox_tools/commands/get.py
+src/proxmox_tools/commands/node.py

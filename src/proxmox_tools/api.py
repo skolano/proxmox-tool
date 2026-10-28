@@ -3,6 +3,7 @@ import urllib3
 from requests.adapters import HTTPAdapter
 
 MAX_WORKERS = 20
+GUEST_TYPES = ("qemu", "lxc")
 
 
 class ProxmoxAPIError(Exception):
@@ -36,21 +37,51 @@ class ProxmoxAPI:
     def get_nodes(self) -> list[dict]:
         return self.get("/nodes")
 
-    def get_vms(self) -> list[dict]:
+    def get_guests(self) -> list[dict]:
         resources = self.get("/cluster/resources?type=vm")
-        return [r for r in resources if r.get("type") == "qemu"]
+        return [r for r in resources if r.get("type") in GUEST_TYPES]
 
-    def get_vm_config(self, node: str, vmid: int) -> dict:
-        return self.get(f"/nodes/{node}/qemu/{vmid}/config")
+    def get_guest_config(self, guest_type: str, node: str, vmid: int) -> dict:
+        return self.get(f"/nodes/{node}/{guest_type}/{vmid}/config")
 
-    def get_vm_status(self, node: str, vmid: int) -> dict:
-        return self.get(f"/nodes/{node}/qemu/{vmid}/status/current")
+    def get_guest_status(self, guest_type: str, node: str, vmid: int) -> dict:
+        return self.get(f"/nodes/{node}/{guest_type}/{vmid}/status/current")
 
-    def get_vm_snapshots(self, node: str, vmid: int) -> list[dict]:
-        return self.get(f"/nodes/{node}/qemu/{vmid}/snapshot")
+    def get_guest_snapshots(self, guest_type: str, node: str, vmid: int) -> list[dict]:
+        return self.get(f"/nodes/{node}/{guest_type}/{vmid}/snapshot")
 
-    def get_vm_firewall_options(self, node: str, vmid: int) -> dict:
-        return self.get(f"/nodes/{node}/qemu/{vmid}/firewall/options")
+    def get_guest_firewall_options(self, guest_type: str, node: str, vmid: int) -> dict:
+        return self.get(f"/nodes/{node}/{guest_type}/{vmid}/firewall/options")
+
+    def get_lxc_interfaces(self, node: str, vmid: int) -> list[dict]:
+        return self.get(f"/nodes/{node}/lxc/{vmid}/interfaces") or []
+
+    def get_node_status(self, node: str) -> dict:
+        return self.get(f"/nodes/{node}/status")
+
+    def get_node_version(self, node: str) -> dict:
+        return self.get(f"/nodes/{node}/version")
+
+    def get_node_subscription(self, node: str) -> dict:
+        return self.get(f"/nodes/{node}/subscription")
+
+    def get_node_storage(self, node: str) -> list[dict]:
+        return self.get(f"/nodes/{node}/storage")
+
+    def get_cluster_status(self) -> list[dict]:
+        return self.get("/cluster/status")
+
+    def get_cluster_storage(self) -> list[dict]:
+        return self.get("/cluster/resources?type=storage")
+
+    def get_backup_jobs(self) -> list[dict]:
+        return self.get("/cluster/backup")
+
+    def get_not_backed_up(self) -> list[dict]:
+        return self.get("/cluster/backup-info/not-backed-up")
+
+    def get_cluster_firewall_options(self) -> dict:
+        return self.get("/cluster/firewall/options")
 
     def get_storages(self) -> list[dict]:
         return self.get("/storage")

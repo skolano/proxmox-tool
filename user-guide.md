@@ -1,5 +1,13 @@
 # proxmox-tool — User Guide
 
+- [Requirements](#requirements)
+- [Guests: VMs and LXC containers](#guests-vms-and-lxc-containers)
+- [Installation](#installation)
+- [Output conventions](#output-conventions)
+- [Contexts (clusters)](#contexts-clusters)
+- [get nodes](#get-nodes) · [get vms](#get-vms) · [get vm](#get-vm) · [get firewall](#get-firewall)
+- [describe vm](#describe-vm) · [describe node](#describe-node) · [describe cluster](#describe-cluster)
+
 ## Requirements
 
 - Python 3.10+ and `pipx`.
@@ -9,7 +17,12 @@
     ```bash
     pveum acl modify / -token 'user@realm!token-name' -role PVEAuditor
     ```
-- `qemu-guest-agent` installed and running in VMs that should be found by IP or show live data.
+- Proxmox VE 8.1 or newer (live LXC addresses use the `/lxc/{vmid}/interfaces` endpoint).
+- `qemu-guest-agent` installed and running in VMs that should be found by IP or show live data. LXC containers need no agent.
+
+## Guests: VMs and LXC containers
+
+Commands named `vm` (`get vms`, `get vm`, `describe vm`) work with both QEMU VMs and LXC containers. VMIDs are unique across both types, so a guest is always identified by its ID alone. The guest type is shown as `VM` or `LXC`.
 
 ## Installation
 
@@ -25,6 +38,26 @@ Shell completion (zsh, bash, fish):
 ```bash
 proxmox-tool --install-completion
 ```
+
+## Output conventions
+
+| Marker | Meaning |
+|---|---|
+| `-` | No value (not set, not applicable, or node offline) |
+| `error` | The value could not be fetched; `get vms` also lists the affected IDs below the table |
+| `Failed to fetch …` | A whole section could not be read, e.g. missing permission; other sections are still shown |
+| `Stopped, no live data` | Live value of a stopped guest |
+
+Thresholds (green / yellow / red):
+
+| Value | Yellow from | Red from |
+|---|---|---|
+| Storage, RAM, root FS usage | 80% | 90% |
+| IO delay | 5% | 10% |
+| vCPU allocated / physical threads | 2.0x | 4.0x |
+| RAM allocated / physical RAM | 0.9x | 1.0x |
+
+Exit codes: `0` success, `1` error, invalid options, unknown VMID or node, or no match in `get vm`.
 
 ## Contexts (clusters)
 
@@ -51,6 +84,7 @@ proxmox-tool get nodes
 | RAM | Live RAM usage, e.g. `12.3 GB / 64.0 GB (19%)` |
 | Uptime | e.g. `5d 5h` |
 | Running VMs | VMs in `running` state on the node |
+| Running LXC | LXC containers in `running` state on the node |
 
 Unlike `get vms`, which shows allocated resources, this command shows current host load. Missing data for offline nodes is shown as `-`.
 
@@ -60,39 +94,43 @@ Unlike `get vms`, which shows allocated resources, this command shows current ho
 proxmox-tool get vms [--serial] [filters]
 ```
 
+Lists VMs and LXC containers in one table.
+
 | Column | Description |
 |---|---|
-| VMID | VM ID |
-| Name | VM name |
-| Node | Node the VM runs on |
+| VMID | Guest ID |
+| Type | `VM` or `LXC` |
+| Name | Guest name |
+| Node | Node the guest runs on |
 | Status | `running` / `stopped` / ... |
 | RAM | Allocated memory |
-| CPU | Allocated vCPUs |
+| CPU | Allocated vCPUs (VM) or cores (LXC) |
 | Bridge | Bridges of all network interfaces, comma-separated |
 | Pool | Pool membership, `-` if none |
-| Serial | SMBIOS serial, only with `--serial` |
+| Serial | SMBIOS serial, only with `--serial`; always `-` for LXC |
 
-The config of every VM is fetched in parallel (needed for Bridge and Serial). The Guest Agent is not queried. If a config cannot be fetched, the cell shows `error` and the affected VM IDs are listed below the table.
+The config of every guest is fetched in parallel (needed for Bridge and Serial). The Guest Agent is not queried. If a config cannot be fetched, the cell shows `error` and the affected IDs are listed below the table.
 
 A summary is printed below the table and counts only the rows shown, templates excluded:
 
 ```
-Total: 42 VMs (30 running, 12 stopped), excluding 5 templates | Without serial: 7
+Total: 42 VMs, 12 LXC (48 running, 6 stopped), excluding 5 templates | VMs without serial: 7
 ```
 
-`Without serial` appears only with `--serial`.
+`VMs without serial` appears only with `--serial` and counts VMs only.
 
 Filters (exact match, combinable, no extra API requests):
 
 | Option | Description |
 |---|---|
-| `--pool <name>` | Only VMs in the pool |
-| `--without-pool` | Only VMs outside any pool; cannot be combined with `--pool` |
-| `--node <name>` | Only VMs on the node |
-| `--status <status>` | Only VMs in the state, e.g. `running` |
-| `--tag <tag>` | Only VMs with the tag |
+| `--type <type>` | Only `vm` or only `lxc` |
+| `--pool <name>` | Only guests in the pool |
+| `--without-pool` | Only guests outside any pool; cannot be combined with `--pool` |
+| `--node <name>` | Only guests on the node |
+| `--status <status>` | Only guests in the state, e.g. `running` |
+| `--tag <tag>` | Only guests with the tag |
 
-`--without-pool` is useful when pool membership drives backup jobs: a VM outside any pool may have no backup.
+`--without-pool` is useful when pool membership drives backup jobs: a guest outside any pool may have no backup.
 
 ## get vm
 
@@ -102,15 +140,19 @@ proxmox-tool get vm --serial UMO/2026/048-CE47AC
 proxmox-tool get vm --name web01
 ```
 
-Exactly one option is required. Every matching VM is printed as `VMID` and `Name`, sorted by VMID (duplicate names or IP addresses show all matches). Exit code is `1` when nothing is found.
+Exactly one option is required. Every matching guest is printed with `VMID`, `Name` and `Type`, sorted by VMID (duplicate names or IP addresses show all matches). Exit code is `1` when nothing is found.
 
-| Option | Source | Stopped VMs |
+```
+VMID: 201  Name: web01  Type: LXC
+```
+
+| Option | VM | LXC |
 |---|---|---|
-| `--ip` | Guest Agent, any interface | No |
-| `--serial` | SMBIOS serial from VM config | Yes |
-| `--name` | VM name | Yes |
+| `--ip` | Guest Agent, running VMs only | Live addresses when running, static `ip=` from config otherwise |
+| `--serial` | SMBIOS serial, includes stopped | Not searched (no SMBIOS) |
+| `--name` | Exact name | Exact name |
 
-`--ip` queries all running VMs in parallel. VMs without a responding Guest Agent are skipped.
+`--ip` queries guests in parallel. VMs without a responding Guest Agent are skipped. Stopped LXC containers with DHCP cannot be found by IP.
 
 ## get firewall
 
@@ -118,11 +160,11 @@ Exactly one option is required. Every matching VM is printed as `VMID` and `Name
 proxmox-tool get firewall
 ```
 
-Proxmox has two independent firewall switches:
+Covers VMs and LXC containers (column **Type**). Proxmox has two independent firewall switches:
 
 | Column | Description |
 |---|---|
-| Firewall (VM) | VM switch (**Options → Firewall**): 🟢 enabled / 🔴 disabled |
+| Firewall (VM) | Guest switch (**Options → Firewall**): 🟢 enabled / 🔴 disabled |
 | Firewalled interfaces | Interfaces with the firewall checkbox (**Hardware → Network Device → Firewall**), `-` if none |
 
 Traffic on an interface is filtered only when **both** switches are enabled. `error` means the data could not be fetched.
@@ -133,18 +175,54 @@ Traffic on an interface is filtered only when **both** switches are enabled. `er
 proxmox-tool describe vm 100
 ```
 
+Works for VMs and LXC containers; the type is detected from the ID.
+
 Sections:
 
-- **General** — VMID, name, node, status, uptime, tags, pool, notes, and SMBIOS fields when set (UUID, serial, manufacturer, product, version, SKU, family). Base64-encoded SMBIOS values are decoded.
-- **Resources** — allocated RAM/CPU and live usage for running VMs.
-- **Network** — interfaces from the config (model, MAC, bridge, VLAN) and IPv4 addresses from the Guest Agent matched by MAC.
-- **Disks** — SCSI, VirtIO, SATA, IDE, EFI and TPM state disks with storage and size. CD-ROM drives are skipped.
+- **General** — VMID, type (`VM`, `LXC (unprivileged)` or `LXC (privileged)`), name, node, status, uptime, tags, pool, notes. VM: SMBIOS fields when set (UUID, serial, manufacturer, product, version, SKU, family; Base64 values are decoded). LXC: hostname and OS type from the config.
+- **Resources** — allocated RAM/CPU and live usage for running guests. LXC: swap as well.
+- **Network** — interfaces from the config (model, MAC, bridge, VLAN) and IPv4 addresses matched by MAC: from the Guest Agent (VM) or the container's live interfaces (LXC). A static LXC address is shown as `<ip> (config)` when no live data is available.
+- **Disks** — VM: SCSI, VirtIO, SATA, IDE, EFI and TPM state disks with storage and size; CD-ROM drives are skipped. LXC: `rootfs` and mount points (`mpX`) with storage, size and mount point; bind mounts show storage `bind`.
 - **Snapshots** — name, description and date.
 - **Backup** — date, storage and size of the **most recent existing backup** (not the schedule). All enabled storages with `backup` content are checked: shared ones (PBS, NFS, CIFS, CephFS, GlusterFS or flagged `shared`) once, local ones on every online node. A backup on another node's local storage is shown as `storage (node)`. Storages that could not be read are listed below the section.
-- **Guest OS** — hostname and OS name from the Guest Agent.
+- **Guest OS** — VM only: hostname and OS name from the Guest Agent.
 
 Edge cases:
 
 - Unknown VMID: error message, exit code `1`.
-- Stopped VM: live fields show `VM stopped, no live data`.
+- Stopped guest: live fields show `Stopped, no live data`.
 - Running VM without a responding agent: network shows config without IPs, Guest OS shows `Guest Agent unavailable`.
+
+## describe node
+
+```bash
+proxmox-tool describe node pve1
+proxmox-tool describe node
+```
+
+Without a name, an arrow-key menu lists the cluster nodes.
+
+- **General** — status, uptime, PVE version, kernel, boot mode (UEFI / Secure Boot / Legacy BIOS), subscription.
+- **CPU** — model, sockets/cores/threads, usage, load average (1/5/15 min), IO delay (yellow from 5%, red from 10%).
+- **Memory** — RAM, swap, memory shared by KSM, root filesystem.
+- **Allocation** — vCPUs and RAM assigned to running guests against physical threads and RAM, as a ratio. vCPU: yellow from 2x, red from 4x. RAM: yellow from 0.9x, red from 1.0x.
+- **Storage** — storages visible from the node: type, shared flag, usage (yellow from 80%, red from 90%), active state.
+- **Guests** — guests on the node, running first; templates are counted, not listed.
+
+For an offline node only General and Guests are shown. An unknown node name prints the available nodes and exits with `1`.
+
+## describe cluster
+
+```bash
+proxmox-tool describe cluster
+```
+
+- **Cluster** — name, quorum, online nodes, config version, member nodes with IP and state. A standalone node is reported as such.
+- **Versions** — PVE version per node, with a warning when nodes differ.
+- **Capacity** — physical threads and RAM of online nodes, current usage, and resources allocated to running guests (same thresholds as `describe node`).
+- **Guests** — running, stopped and template counts for VMs and LXC.
+- **Storage** — shared storages once, local storages per node, with usage and state.
+- **Backup** — scheduled backup jobs (schedule, storage, target, mode, enabled) and the guests not covered by any job, as reported by Proxmox.
+- **Security** — datacenter firewall switch and default input/output policies. While the datacenter firewall is disabled, no guest or node rules are applied.
+
+A section that cannot be read (e.g. the token lacks a permission) shows `Failed to fetch …`; the remaining sections are still printed.

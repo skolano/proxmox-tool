@@ -2,6 +2,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import typer
 from rich.console import Console
+from rich.table import Table
 
 from proxmox_tools import config
 from proxmox_tools.api import MAX_WORKERS, ProxmoxAPI, ProxmoxAPIError
@@ -12,6 +13,19 @@ console = Console()
 def fail(message: str) -> None:
     console.print(f"[red]{message}[/red]")
     raise typer.Exit(1)
+
+
+def print_kv(rows: list[tuple[str, str]]) -> None:
+    table = Table(show_header=False, box=None, pad_edge=False)
+    table.add_column(style="bold")
+    table.add_column()
+    for key, value in rows:
+        table.add_row(key, value)
+    console.print(table)
+
+
+def section(title: str) -> None:
+    console.print(f"[bold]{title}[/bold]")
 
 
 def get_api() -> ProxmoxAPI:
@@ -27,9 +41,9 @@ def get_api() -> ProxmoxAPI:
     )
 
 
-def fetch_vms(api: ProxmoxAPI) -> list[dict]:
+def fetch_guests(api: ProxmoxAPI) -> list[dict]:
     try:
-        return api.get_vms()
+        return api.get_guests()
     except ProxmoxAPIError as exc:
         fail(str(exc))
 
