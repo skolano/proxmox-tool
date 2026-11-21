@@ -4,8 +4,8 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from proxmox_tools import config
-from proxmox_tools.api import MAX_WORKERS, ProxmoxAPI, ProxmoxAPIError
+from proxmox_tool import config
+from proxmox_tool.api import MAX_WORKERS, ProxmoxAPI, ProxmoxAPIError
 
 console = Console()
 

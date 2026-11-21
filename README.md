@@ -1,4 +1,4 @@
-# proxmox-tools
+# proxmox-tool
 
 `proxmox-tool` is a command-line tool for querying Proxmox VE clusters through the REST API, without the web UI. VMs and LXC containers are both covered; commands named `vm` work with either and show the guest type.
 
@@ -24,7 +24,7 @@ Full usage, columns and limitations: [user-guide.md](user-guide.md).
 - Multiple clusters with one active context, similar to `kubectl config use-context`.
 - Live data only, no cache. Per-guest, per-node and per-storage requests run in parallel (up to 20).
 - VMs and LXC containers share one model (guest); the type is resolved from the VMID.
-- Configuration and secrets in `~/.config/proxmox-tools/config.yaml` (mode `600`).
+- Configuration and secrets in `~/.config/proxmox-tool/config.yaml` (mode `600`).
 - Python, Typer, requests, rich, questionary, PyYAML.
 
 ## Requirements

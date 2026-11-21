@@ -2,7 +2,7 @@ from pathlib import Path
 
 import yaml
 
-CONFIG_DIR = Path.home() / ".config" / "proxmox-tools"
+CONFIG_DIR = Path.home() / ".config" / "proxmox-tool"
 CONFIG_FILE = CONFIG_DIR / "config.yaml"
 
 

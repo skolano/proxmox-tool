@@ -10,8 +10,8 @@
 
 import typer
 
-from proxmox_tools import __version__
-from proxmox_tools.commands import context, describe, get
+from proxmox_tool import __version__
+from proxmox_tool.commands import context, describe, get
 
 app = typer.Typer(help="Query Proxmox VE clusters from the terminal.")
 app.add_typer(context.app, name="context")

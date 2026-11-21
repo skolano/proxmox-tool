@@ -1,9 +1,9 @@
 import typer
 from rich.table import Table
 
-from proxmox_tools.api import ProxmoxAPI, ProxmoxAPIError
-from proxmox_tools.commands.common import console, fail, fetch_guests, get_api, run_parallel
-from proxmox_tools.utils import (
+from proxmox_tool.api import ProxmoxAPI, ProxmoxAPIError
+from proxmox_tool.commands.common import console, fail, fetch_guests, get_api, run_parallel
+from proxmox_tool.utils import (
     extract_bridges,
     format_bytes_as_mb,
     format_cpu_usage,

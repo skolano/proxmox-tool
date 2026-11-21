@@ -1,9 +1,9 @@
 from rich.table import Table
 
-from proxmox_tools.api import ProxmoxAPI, ProxmoxAPIError
-from proxmox_tools.commands.common import console, fail, get_api, print_kv, run_parallel, section
-from proxmox_tools.commands.node import CPU_OVERCOMMIT, GB, RAM_OVERCOMMIT, running_guests
-from proxmox_tools.utils import (
+from proxmox_tool.api import ProxmoxAPI, ProxmoxAPIError
+from proxmox_tool.commands.common import console, fail, get_api, print_kv, run_parallel, section
+from proxmox_tool.commands.node import CPU_OVERCOMMIT, GB, RAM_OVERCOMMIT, running_guests
+from proxmox_tool.utils import (
     format_firewall_status,
     format_overcommit,
     format_usage,

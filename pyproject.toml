@@ -1,11 +1,20 @@
 [project]
-name = "proxmox-tools"
+name = "proxmox-tool"
 dynamic = ["version"]
 description = "CLI for querying Proxmox VE clusters through the REST API"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 license-files = ["LICENSE"]
+authors = [{ name = "Szymon Kolano" }]
+keywords = ["proxmox", "proxmox-ve", "cli", "virtualization", "sysadmin"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: System Administrators",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: System :: Systems Administration",
+]
 dependencies = [
     "typer==0.27.2",
     "requests==2.34.2",
@@ -14,15 +23,20 @@ dependencies = [
     "PyYAML==6.0.3",
 ]
 
+[project.urls]
+Homepage = "https://github.com/skolano/proxmox-tool"
+Repository = "https://github.com/skolano/proxmox-tool"
+Issues = "https://github.com/skolano/proxmox-tool/issues"
+
 [project.scripts]
-proxmox-tool = "proxmox_tools.cli:main"
+proxmox-tool = "proxmox_tool.cli:main"
 
 [build-system]
 requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.dynamic]
-version = { attr = "proxmox_tools.__version__" }
+version = { attr = "proxmox_tool.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]

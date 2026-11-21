@@ -4,8 +4,8 @@ import questionary
 import typer
 from rich.table import Table
 
-from proxmox_tools import config
-from proxmox_tools.commands.common import console, fail
+from proxmox_tool import config
+from proxmox_tool.commands.common import console, fail
 
 app = typer.Typer(help="Manage configured Proxmox VE clusters.")
 

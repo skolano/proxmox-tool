@@ -61,7 +61,7 @@ Exit codes: `0` success, `1` error, invalid options, unknown VMID or node, or no
 
 ## Contexts (clusters)
 
-Several clusters can be configured, commands always run against the **active context**. Configuration is stored in `~/.config/proxmox-tools/config.yaml` (mode `600`, directory `700`) and contains the API URL, token and SSL verification setting of each context.
+Several clusters can be configured, commands always run against the **active context**. Configuration is stored in `~/.config/proxmox-tool/config.yaml` (mode `600`, directory `700`) and contains the API URL, token and SSL verification setting of each context.
 
 | Command | Description |
 |---|---|
@@ -135,8 +135,8 @@ Filters (exact match, combinable, no extra API requests):
 ## get vm
 
 ```bash
-proxmox-tool get vm --ip 192.168.140.55
-proxmox-tool get vm --serial UMO/2026/048-CE47AC
+proxmox-tool get vm --ip 192.0.2.10
+proxmox-tool get vm --serial INV/2026/001-A1B2C3
 proxmox-tool get vm --name web01
 ```
 

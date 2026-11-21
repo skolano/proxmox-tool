@@ -1,10 +1,10 @@
 import typer
 from rich.table import Table
 
-from proxmox_tools.api import ProxmoxAPI, ProxmoxAPIError
-from proxmox_tools.commands import cluster, node
-from proxmox_tools.commands.common import console, fail, fetch_guests, get_api, print_kv, run_parallel
-from proxmox_tools.utils import (
+from proxmox_tool.api import ProxmoxAPI, ProxmoxAPIError
+from proxmox_tool.commands import cluster, node
+from proxmox_tool.commands.common import console, fail, fetch_guests, get_api, print_kv, run_parallel
+from proxmox_tool.utils import (
     format_bytes_as_mb,
     format_size_auto,
     format_timestamp,
